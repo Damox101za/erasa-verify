@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a data-erasure certificate · Vusi Erasa</title>
+<meta name="description" content="Check that a Vusi Erasa data-erasure certificate is genuine and unchanged. Runs entirely in your browser.">
+<style>
+  :root { --ink:#16181d; --quiet:#5b6170; --line:#e3e5ea; --bg:#f7f8fa; --card:#fff; --ok:#137a3f; --ok-bg:#e5f5ea; --bad:#b42318; --bad-bg:#fdeceb; --warn:#8a5a00; --warn-bg:#fff4dc; --accent:#2457d6; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#eceef2; --quiet:#a3a9b6; --line:#2c3039; --bg:#121418; --card:#1a1d23; --ok:#5fd18b; --ok-bg:#15301f; --bad:#ff8a80; --bad-bg:#3a1c1a; --warn:#f5c35b; --warn-bg:#352a12; --accent:#7ea2ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width:760px; margin:0 auto; padding:32px 20px 48px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--quiet); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { font-weight:600; display:block; margin-bottom:6px; }
+  textarea, input[type=text] { width:100%; font:13px/1.4 ui-monospace,Menlo,Consolas,monospace; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; }
+  textarea { min-height:110px; resize:vertical; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; padding:10px 18px; background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .hint { color:var(--quiet); font-size:13px; }
+  .verdict { border-radius:12px; padding:18px 20px; margin-bottom:16px; font-weight:600; font-size:17px; }
+  .verdict small { display:block; font-weight:400; font-size:14px; margin-top:4px; }
+  .verdict.ok { background:var(--ok-bg); color:var(--ok); }
+  .verdict.bad { background:var(--bad-bg); color:var(--bad); }
+  .verdict.warn { background:var(--warn-bg); color:var(--warn); }
+  dl { display:grid; grid-template-columns:180px 1fr; gap:6px 16px; margin:0; }
+  dt { color:var(--quiet); }
+  dd { margin:0; word-break:break-word; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  .section + .section { margin-top:18px; padding-top:18px; border-top:1px solid var(--line); }
+  footer { color:var(--quiet); font-size:13px; text-align:center; margin-top:24px; }
+  footer a { color:var(--accent); }
+  [hidden] { display:none !important; }
+  @media (max-width:560px) { dl { grid-template-columns:1fr; } dt { margin-top:6px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Verify a data-erasure certificate</h1>
+  <p class="sub">Checks the digital signature on a Vusi Erasa certificate. Nothing is uploaded: the check runs in your browser.</p>
+
+  <div id="verdict" class="verdict" hidden></div>
+
+  <div class="card" id="details" hidden></div>
+
+  <div class="card">
+    <label for="certInput">Certificate</label>
+    <textarea id="certInput" placeholder="Scan the QR code on the certificate, or paste the certificate JSON here"></textarea>
+    <div class="row">
+      <input type="file" id="certFile" accept=".json,application/json" hidden>
+      <button class="ghost" type="button" id="pickFile">Open certificate file…</button>
+    </div>
+
+    <label for="keyInput" style="margin-top:18px">Issuer public key</label>
+    <input type="text" id="keyInput" placeholder="Loaded from the issuer's key URL, or paste erasa-public-key …">
+    <p class="hint" id="keyHint">Get the key from the issuer directly if you can. A key you obtained yourself is stronger proof than one the certificate points to.</p>
+
+    <div class="row"><button type="button" id="verifyBtn">Verify</button></div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/Damox101za/erasa">Vusi Erasa</a> · open source (AGPL-3.0) · built by Hilton Vusi Kholokholo
+  </footer>
+</main>
+
+<script type="module">
+import { certFromHash, parsePublicKey, verifyCertificate, fingerprint } from "./erasa-verify.js";
+
+const $ = (id) => document.getElementById(id);
+let keySource = "";
+
+function showVerdict(kind, title, detail) {
+  const v = $("verdict");
+  v.className = "verdict " + kind;
+  v.replaceChildren(document.createTextNode(title));
+  if (detail) { const s = document.createElement("small"); s.textContent = detail; v.append(s); }
+  v.hidden = false;
+  v.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function addSection(parent, title, rows) {
+  const filled = rows.filter(([, v]) => v !== undefined && v !== null && v !== "");
+  if (!filled.length) return;
+  const sec = document.createElement("div");
+  sec.className = "section";
+  const h = document.createElement("h2");
+  h.textContent = title;
+  const dl = document.createElement("dl");
+  for (const [k, v] of filled) {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = String(v);
+    dl.append(dt, dd);
+  }
+  sec.append(h, dl);
+  parent.append(sec);
+}
+
+function gb(n) { return n ? (n / 1e9).toFixed(1) + " GB (" + n + " bytes)" : ""; }
+
+function showDetails(c) {
+  const box = $("details");
+  box.replaceChildren();
+  const d = c.drive || {}, m = c.method || {}, r = c.result || {}, i = c.issuer || {}, a = c.asset || {}, e = c.evidence || {};
+  addSection(box, "Result", [["Status", r.status], ["NIST SP 800-88 level", m.nist_level], ["Certificate", c.id], ["Issued", c.issued_at]]);
+  addSection(box, "Drive", [["Model", d.model], ["Serial number", d.serial], ["Type", (d.type || "").toUpperCase()], ["Capacity", gb(d.capacity_bytes)]]);
+  addSection(box, "Asset", [["Asset tag", a.tag], ["Host serial", a.host_serial], ["Client", a.client]]);
+  addSection(box, "Sanitization", [["Method", m.name], ["Tool", m.tool], ["Command", m.command], ["Notes", (m.notes || []).join(" ")], ["Started", r.started], ["Finished", r.finished], ["Verification", r.verification], ["Errors", r.errors]]);
+  addSection(box, "Issued by", [["Issuer", i.name], ["Operator", c.operator], ["Key ID", i.key_id], ["Key fingerprint", i.key_fingerprint], ["Key URL", i.key_url], ["Log SHA-256", e.log_sha256], ["Generator", c.generator]]);
+  box.hidden = false;
+}
+
+async function loadKeyFromCert(c) {
+  const url = c && c.issuer && c.issuer.key_url;
+  if (!url || $("keyInput").value.trim()) return;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    $("keyInput").value = (await res.text()).trim();
+    keySource = "the issuer's key URL (" + new URL(url).host + ")";
+  } catch (err) {
+    $("keyHint").textContent = "Could not load the key from " + url + " (" + err.message + "). Paste the issuer's public key instead.";
+  }
+}
+
+function readCert() {
+  const text = $("certInput").value.trim();
+  if (!text) throw new Error("Paste a certificate or scan its QR code first.");
+  return JSON.parse(text);
+}
+
+async function run() {
+  let cert;
+  try { cert = readCert(); } catch (err) { $("details").hidden = true; return showVerdict("bad", "Not a readable certificate", err.message); }
+  showDetails(cert);
+  await loadKeyFromCert(cert);
+  const keyText = $("keyInput").value.trim();
+  if (!keyText) return showVerdict("warn", "Not verified yet", "The issuer's public key is needed to check the signature.");
+  let pub;
+  try { pub = parsePublicKey(keyText); } catch (err) { return showVerdict("bad", "That public key is not valid", err.message); }
+  const res = await verifyCertificate(cert, pub);
+  if (!res.ok) return showVerdict("bad", "Not valid", res.reason);
+  const fp = await fingerprint(pub);
+  const from = keySource || "the key you provided";
+  if (cert.result && cert.result.status !== "success") {
+    return showVerdict("warn", "Genuine certificate, but the wipe FAILED", `Signed by ${cert.issuer.name} with key ${fp}, from ${from}. This drive is not sanitized.`);
+  }
+  showVerdict("ok", `Valid: genuine and unchanged`, `Signed by ${cert.issuer.name} with key ${fp}, from ${from}.`);
+}
+
+$("verifyBtn").addEventListener("click", run);
+$("keyInput").addEventListener("input", () => { keySource = ""; });
+$("pickFile").addEventListener("click", () => $("certFile").click());
+$("certFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (f) { $("certInput").value = await f.text(); run(); }
+});
+
+try {
+  const fromLink = await certFromHash(location.hash);
+  if (fromLink) { $("certInput").value = JSON.stringify(fromLink, null, 2); run(); }
+} catch (err) {
+  showVerdict("bad", "The link does not contain a readable certificate", err.message);
+}
+</script>
+</body>
+</html>
